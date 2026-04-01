@@ -1,60 +1,83 @@
 pipeline {
   agent any
 
-  parameters {
-    string(name: 'BRANCH', defaultValue: 'main', description: 'Git branch to build')
-    booleanParam(name: 'RUN_TESTS', defaultValue: true, description: 'Run tests?')
-    choice(name: 'ENV', choices: ['dev', 'staging', 'prod'], description: 'Deploy environment')
+  options {
+    timestamps()
+  }
+
+  environment {
+    PYTHON_VERSION = '3.10'
   }
 
   stages {
-
-    stage('Checkout Code') {
-      steps {
-        echo "Cloning branch: ${params.BRANCH}"
-        // Simulate git checkout
-        sh 'echo "git clone repo..."'
-      }
-    }
-
-    stage('Build') {
-      steps {
-        echo "Building application..."
-        sh 'echo "Build successful!"'
-      }
-    }
-
-    stage('Test') {
+    stage('CI') {
       when {
-        expression { params.RUN_TESTS }
-      }
-      parallel {
-        stage('Unit Test') {
-          steps {
-            echo "Running unit tests..."
-            sh 'echo "Unit tests passed!"'
-          }
-        }
-        stage('Integration Test') {
-          steps {
-            echo "Running integration tests..."
-            sh 'echo "Integration tests passed!"'
-          }
+        anyOf {
+          branch 'main'
+          changeRequest target: 'main'
         }
       }
-    }
+      stages {
+        stage('Checkout') {
+          steps {
+            checkout scm
+          }
+        }
 
-    stage('Deploy') {
-      steps {
-        echo "Deploying to ${params.ENV} environment..."
+        stage('Set up Python') {
+          steps {
+            sh '''
+              set -e
+              if command -v python3.10 >/dev/null 2>&1; then
+                python3.10 --version
+              else
+                echo "python3.10 is not installed on this Jenkins agent."
+                echo "Please install Python 3.10 or run this pipeline in a Python 3.10 Docker agent."
+                exit 1
+              fi
+            '''
+          }
+        }
 
-        script {
-          if (params.ENV == 'dev') {
-            sh 'echo "Deploy to DEV server"'
-          } else if (params.ENV == 'staging') {
-            sh 'echo "Deploy to STAGING server"'
-          } else {
-            sh 'echo "Deploy to PRODUCTION server"'
+        stage('Install dependencies') {
+          steps {
+            sh '''
+              set -e
+              python3.10 -m pip install --upgrade pip
+              if [ -f requirements.txt ]; then
+                python3.10 -m pip install -r requirements.txt
+              fi
+            '''
+          }
+        }
+
+        stage('Lint with Ruff') {
+          steps {
+            catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+              sh '''
+                set -e
+                python3.10 -m pip install ruff pytest coverage
+                ruff check --output-format=github --target-version=py310 .
+              '''
+            }
+          }
+        }
+
+        stage('Test with pytest') {
+          steps {
+            sh '''
+              set -e
+              coverage run -m pytest -v -s
+            '''
+          }
+        }
+
+        stage('Generate Coverage Report') {
+          steps {
+            sh '''
+              set -e
+              coverage report -m
+            '''
           }
         }
       }
@@ -62,14 +85,7 @@ pipeline {
   }
 
   post {
-    success {
-      echo "Pipeline completed successfully!"
-    }
-    failure {
-      echo "Pipeline failed!"
-    }
     always {
-      echo "Cleaning workspace..."
       cleanWs()
     }
   }
